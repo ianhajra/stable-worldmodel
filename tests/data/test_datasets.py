@@ -1627,8 +1627,7 @@ class TestHDF5DatasetEdgeCases:
         item = dataset[0]
 
         assert 'label' in item
-        assert isinstance(item['label'], list)
-        assert isinstance(item['label'][0], bytes)
+        assert isinstance(item['label'], str)
 
     def test_grayscale_image_permutation(self, sample_hdf5_grayscale):
         """Test that grayscale images (1 channel) are permuted correctly."""
