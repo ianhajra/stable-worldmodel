@@ -1,8 +1,8 @@
+"""Script to evaluate a World Model using MPC on a dataset of episodes."""
+
 import os
 
-
 os.environ['MUJOCO_GL'] = 'egl'
-
 
 import time
 from pathlib import Path
@@ -14,19 +14,16 @@ import torch
 from omegaconf import DictConfig, OmegaConf
 from sklearn import preprocessing
 from torchvision.transforms import v2 as transforms
-
 import stable_worldmodel as swm
-import wandb
 
 
-def img_transform():
+def img_transform(cfg):
     transform = transforms.Compose(
         [
             transforms.ToImage(),
             transforms.ToDtype(torch.float32, scale=True),
             transforms.Normalize(**spt.data.dataset_stats.ImageNet),
-            transforms.Resize(size=224),
-            transforms.CenterCrop(size=224),
+            transforms.Resize(size=cfg.eval.img_size),
         ]
     )
     return transform
@@ -36,6 +33,7 @@ def get_episodes_length(dataset, episodes):
     col_name = (
         'episode_idx' if 'episode_idx' in dataset.column_names else 'ep_idx'
     )
+
     episode_idx = dataset.get_col_data(col_name)
     step_idx = dataset.get_col_data('step_idx')
     lengths = []
@@ -46,11 +44,15 @@ def get_episodes_length(dataset, episodes):
 
 def get_dataset(cfg, dataset_name):
     dataset_path = Path(cfg.cache_dir or swm.data.utils.get_cache_dir())
-    dataset = swm.data.HDF5Dataset(dataset_name, cache_dir=dataset_path)
+    dataset = swm.data.HDF5Dataset(
+        dataset_name,
+        keys_to_cache=cfg.dataset.keys_to_cache,
+        cache_dir=dataset_path,
+    )
     return dataset
 
 
-@hydra.main(version_base=None, config_path='.', config_name='pusht')
+@hydra.main(version_base=None, config_path='./config', config_name='pusht')
 def run(cfg: DictConfig):
     """Run evaluation of dinowm vs random policy."""
     assert (
@@ -58,59 +60,53 @@ def run(cfg: DictConfig):
         <= cfg.eval.eval_budget
     ), 'Planning horizon must be smaller than or equal to eval_budget'
 
-    if cfg.wandb.enable:
-        # Initialize wandb
-        wandb.init(
-            project=cfg.wandb.project,
-            entity=cfg.wandb.entity,
-            config=dict(cfg),
-        )
-
     # create world environment
     cfg.world.max_episode_steps = 2 * cfg.eval.eval_budget
-    world = swm.World(
-        **cfg.world, image_shape=(224, 224), render_mode='rgb_array'
-    )
+    world = swm.World(**cfg.world, image_shape=(224, 224))
 
     # create the transform
     transform = {
-        'pixels': img_transform(),
-        'goal': img_transform(),
+        'pixels': img_transform(cfg),
+        'goal': img_transform(cfg),
     }
 
     dataset = get_dataset(cfg, cfg.eval.dataset_name)
-
+    stats_dataset = dataset  # get_dataset(cfg, cfg.dataset.stats)
     col_name = (
         'episode_idx' if 'episode_idx' in dataset.column_names else 'ep_idx'
     )
     ep_indices, _ = np.unique(
-        dataset.get_col_data(col_name), return_index=True
+        stats_dataset.get_col_data(col_name), return_index=True
     )
 
-    # create the processing
-    action_process = preprocessing.StandardScaler()
-    action_process.fit(dataset.get_col_data('action'))
+    process = {}
+    for col in cfg.dataset.keys_to_cache:
+        if col in ['pixels']:
+            continue
+        processor = preprocessing.StandardScaler()
+        col_data = stats_dataset.get_col_data(col)
+        col_data = col_data[~np.isnan(col_data).any(axis=1)]
+        processor.fit(col_data)
+        process[col] = processor
 
-    process = {'action': action_process}
-
-    if 'proprio' in dataset.column_names:
-        proprio_process = preprocessing.StandardScaler()
-        proprio_process.fit(dataset.get_col_data('proprio'))
-        process['proprio'] = proprio_process
-        process['goal_proprio'] = proprio_process
+        if col != 'action':
+            process[f'goal_{col}'] = process[col]
 
     # -- run evaluation
     policy = cfg.get('policy', 'random')
 
     if policy != 'random':
-        model = swm.policy.AutoActionableModel(cfg.policy)
+        model = swm.policy.AutoCostModel(cfg.policy)
         model = model.to('cuda')
         model = model.eval()
         model.requires_grad_(False)
-
-        policy = swm.policy.FeedForwardPolicy(
-            model=model, process=process, transform=transform
+        model.interpolate_pos_encoding = True
+        config = swm.PlanConfig(**cfg.plan_config)
+        solver = hydra.utils.instantiate(cfg.solver, model=model)
+        policy = swm.policy.WorldModelPolicy(
+            solver=solver, config=config, process=process, transform=transform
         )
+
     else:
         policy = swm.policy.RandomPolicy()
 
@@ -172,12 +168,6 @@ def run(cfg: DictConfig):
         video_path=results_path,
     )
     end_time = time.time()
-
-    if cfg.wandb.enable:
-        # Log metrics to wandb
-        wandb.log(metrics)
-        # Finish wandb run
-        wandb.finish()
 
     print(metrics)
 
