@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 import torch
 from gymnasium import spaces as gym_spaces
+from unittest.mock import patch
 
 from stable_worldmodel.policy import PlanConfig
 from stable_worldmodel.solver.grasp import GRASPSolver
@@ -195,14 +196,17 @@ def test_configure_action_block():
     assert solver.action_dim == 6  # 3 * action_block=2
 
 
-def test_configure_warns_on_discrete_space(caplog):
+def test_configure_warns_on_discrete_space():
     """configure() logs a warning for discrete action spaces."""
     model = DummyRollableModel()
     solver = GRASPSolver(model=model)
     action_space = gym_spaces.Discrete(5)
     config = PlanConfig(horizon=3, receding_horizon=3)
-    solver.configure(action_space=action_space, n_envs=1, config=config)
-    assert 'discrete' in caplog.text.lower() or solver._configured
+    with patch('loguru.logger.warning') as mock_warning:
+        solver.configure(action_space=action_space, n_envs=1, config=config)
+    mock_warning.assert_called_once()
+    warning_text = mock_warning.call_args[0][0].lower()
+    assert 'discrete' in warning_text
 
 
 # ---------------------------------------------------------------------------
