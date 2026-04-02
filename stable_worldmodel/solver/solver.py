@@ -7,7 +7,9 @@ import torch
 class Costable(Protocol):
     """Protocol for world model cost functions."""
 
-    def criterion(self, info_dict: dict, action_candidates: torch.Tensor) -> torch.Tensor:
+    def criterion(
+        self, info_dict: dict, action_candidates: torch.Tensor
+    ) -> torch.Tensor:
         """Compute the cost criterion for action candidates.
 
         Args:
@@ -19,7 +21,9 @@ class Costable(Protocol):
         """
         ...
 
-    def get_cost(self, info_dict: dict, action_candidates: torch.Tensor) -> torch.Tensor:  # pragma: no cover
+    def get_cost(
+        self, info_dict: dict, action_candidates: torch.Tensor
+    ) -> torch.Tensor:  # pragma: no cover
         """Compute cost for given action candidates based on info dictionary.
 
         Args:
@@ -33,10 +37,42 @@ class Costable(Protocol):
 
 
 @runtime_checkable
+class Rollable(Protocol):
+    """Protocol for world models that expose a differentiable rollout method.
+
+    Required by :class:`~stable_worldmodel.solver.grasp.GRASPSolver` to perform
+    single-step latent-space predictions during the joint state–action
+    optimisation loop.
+
+    Implementations must accept an ``info_dict`` whose ``'emb'`` key holds the
+    current latent state and write the predicted next state(s) into
+    ``info_dict['predicted_emb']``.
+    """
+
+    def rollout(self, info_dict: dict, action_sequence: torch.Tensor) -> dict:
+        """Roll the world model forward for one or more steps from a latent state.
+
+        Args:
+            info_dict: Must contain ``'emb': (B, D)`` – the current latent
+                embedding.  Any additional keys are forwarded unchanged.
+            action_sequence: ``(B, S, T, action_dim)`` action candidates where
+                *B* is batch size, *S* is the number of parallel samples, and
+                *T* is the number of timesteps to roll out.
+
+        Returns:
+            The modified ``info_dict`` with ``'predicted_emb': (B, S, T, D)``
+            written in place.
+        """
+        ...
+
+
+@runtime_checkable
 class Solver(Protocol):
     """Protocol for model-based planning solvers."""
 
-    def configure(self, *, action_space: gym.Space, n_envs: int, config: Any) -> None:
+    def configure(
+        self, *, action_space: gym.Space, n_envs: int, config: Any
+    ) -> None:
         """Configure the solver with environment and planning specifications.
 
         Args:
@@ -61,7 +97,9 @@ class Solver(Protocol):
         """Planning horizon length in timesteps."""
         ...
 
-    def solve(self, info_dict: dict, init_action: torch.Tensor | None = None) -> dict:
+    def solve(
+        self, info_dict: dict, init_action: torch.Tensor | None = None
+    ) -> dict:
         """Solve the planning optimization problem to find optimal actions.
 
         Args:
